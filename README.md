@@ -98,6 +98,7 @@ Use the -h or the --help flag to get a listing of options.
        [-s | --host] the database server hostname
        [-o | --options] the json file to load the options from instead of using command line
        [-r | --restore] enables restore mode
+       [-c | --create] backups or restores the database in creation mode
 
 License and Bug Fixes
 ===========
