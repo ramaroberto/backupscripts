@@ -61,14 +61,14 @@ class MysqlBackup:
     ignore_codes=None, get_output=False, path="."):
     p = subprocess.Popen([command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, cwd=path)
     out, err = p.communicate()
-
     result = p.returncode
     if result and not ignore_errors and (not ignore_codes or result in set(ignore_codes)):
       raise BaseException(str(command) + " " + str(result))
+    return out
 
-  def get_databases(self):
+  def get_databases(self, force=False):
 
-    if self.databases != None:
+    if not force and self.databases != None:
       return [s.strip() for s in self.databases.strip().split(",")]
 
     list_cmd = "mysql -u" + self.user
@@ -77,12 +77,12 @@ class MysqlBackup:
     if self.password != None:
       list_cmd += " -p" + self.password
     list_cmd += " --silent -N -e 'show databases'"
-    databases = os.popen(list_cmd).readlines()
+    databases = self.run_command(list_cmd).split("\n")[:-1]
     return [s.strip() for s in databases]
     
-  def restore(self):    
+  def restore(self, create=False):    
     dbbackup_path = self.store + os.sep 
-    backups = sorted(os.listdir(dbbackup_path), reverse=True)
+    backups = sorted(filter(lambda fln: fln.split(".")[-1] == "gz", os.listdir(dbbackup_path)), reverse=True)
 
     # show available options
     k = 1
@@ -137,10 +137,11 @@ class MysqlBackup:
     date = format_date(options[user_input]["date"])
     filenames = options[user_input]["filenames"]
     selected_databases = rlinput("Databases to restore: ", options[user_input]["databases"])
-    databases = ",".join(filter(lambda db: db in selected_databases, self.get_databases()))
-    if databases == "":
-      print "Error: The selected databases doesn't match any created databases."
-      sys.exit()
+    if not create:
+      databases = ",".join(filter(lambda db: db in selected_databases, self.get_databases(True)))
+      if databases == "":
+        print "Error: The selected databases doesn't match any created databases."
+        sys.exit()
 
     # ask for confirmation
     print "The databases \"%s\" are going to be restored using the version dated \"%s\"" % (databases, date)
@@ -165,7 +166,8 @@ class MysqlBackup:
         restore_cmd += " -h " + "'" + self.host + "'"
       if self.password != None:
         restore_cmd += " -p" + self.password
-      restore_cmd += " " + db
+      if not create:
+        restore_cmd += " " + db
 
       print "Restoring \"" + db + "\"...",
       sys.stdout.flush()
@@ -175,7 +177,7 @@ class MysqlBackup:
 
     print "Restore complete!"
 
-  def backup(self):
+  def backup(self, create=False):
     
     padding = len(str(self.keep))    
     backups = []
@@ -198,16 +200,24 @@ class MysqlBackup:
         continue
 
       dbbackup_name = string.join([tstamp, db, "sql"], ".")
-      dbbackup_path = self.store + os.sep + dbbackup_name 
+      dbbackup_path = self.store + os.sep + dbbackup_name + (".crt" if create else "") + ".gz"
 
       dump_cmd = "mysqldump -u " + self.user
       if self.host != None:
         dump_cmd += " -h " + "'" + self.host + "'"
       if self.password != None:
         dump_cmd += " -p" + self.password
-      dump_cmd += " -e --opt -c " + db + " | gzip > " + dbbackup_path + ".gz"
-      logging.info("Dump db, %s to %s." % (db, dbbackup_path))
-      os.popen(dump_cmd)
+      if create:
+        dump_cmd += " -B"
+      dump_cmd += " -e --opt -c " + db + " | gzip > " + dbbackup_path
+      message = "Saving db \"%s\" to \"%s\"." % (db, dbbackup_path)
+      print message + "...",
+      sys.stdout.flush()
+      self.run_command(dump_cmd)
+      print "done"
+      logging.info(message)
+
+    print "Backup finished!"
 
 """
 Prints out the usage for the command line.
@@ -223,6 +233,7 @@ def usage():
   usage.append("  [-s | --host] the database server hostname\n")
   usage.append("  [-o | --options] the json file to load the options from instead of using command line\n")
   usage.append("  [-r | --restore] enables restore mode\n")
+  usage.append("  [-c | --create] backups or restores the database in creation mode\n")
   message = string.join(usage)
   print message
 
@@ -241,13 +252,14 @@ def main(argv):
   store = None
   options = None
   restore = False
+  create = False
 
   try:
     
     # process the command line options
-    st = "hn:k:d:t:u:p:s:o:r"
+    st = "hn:k:d:t:u:p:s:o:r:c"
     lt = ["help", "keep=", "databases=", "store=", "user=", "password=", 
-        "host=", "options=", "restore"]
+        "host=", "options=", "restore", "create"]
     opts, args = getopt.getopt(argv, st, lt)
     
     # if no arguments print usage
@@ -299,6 +311,8 @@ def main(argv):
         host = arg
       elif opt in ("-r", "--restore"):
         restore = True
+      elif opt in ("-c", "--create"):
+        create = True
            
   except getopt.GetoptError, msg:    
     logging.warning(msg)
@@ -329,9 +343,9 @@ def main(argv):
     # create the backup object and call its backup method    
     mysql_backup = MysqlBackup(keep, databases, store, user, password, host)
     if restore:
-        mysql_backup.restore()
+        mysql_backup.restore(create)
     else:
-        mysql_backup.backup()
+        mysql_backup.backup(create)
 
   except(Exception):            
     logging.exception("Mysql backups failed.")      
